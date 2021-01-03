@@ -6,65 +6,86 @@ import win32 "core:sys/win32"
 
 // TODO @cleanup global
 running := true;
-bitmap_info: win32.Bitmap_Info;
-bitmap_memory: rawptr;
-bitmap_width: i32;
-bitmap_height: i32;
-need_to_resize: bool;
-x_offset: i32;
-y_offset: i32;
+buffer: Win32_Offscreen_Buffer;
 
-render_weird_gradient :: proc(blue_offset, green_offset: i32) {
-    pixel_count := int(bitmap_width * bitmap_height);
+
+Win32_Offscreen_Buffer :: struct {
+    bitmap_info: win32.Bitmap_Info,
+    memory: rawptr,
+    width: i32,
+    height: i32,
+    need_to_resize: bool,
+    x_offset: i32,
+    y_offset: i32
+};
+
+
+Win32_Window_Dimension :: struct {
+    width: i32,
+    height: i32
+};
+
+
+win32_get_window_dimension :: proc "std" (window: win32.Hwnd) -> Win32_Window_Dimension {
+    using win32;
+    client_rect: Rect;
+    get_client_rect(window, &client_rect);
+
+    return Win32_Window_Dimension {
+        width = client_rect.right - client_rect.left,
+        height = client_rect.bottom - client_rect.top
+    };
+}
+
+
+render_weird_gradient :: proc(buffer: Win32_Offscreen_Buffer, blue_offset, green_offset: i32) {
+    pixel_count := int(buffer.width * buffer.height);
     
     Pixel :: [4]u8;
-    pixels := mem.slice_ptr(cast(^Pixel)bitmap_memory, pixel_count);
+    pixels := mem.slice_ptr(cast(^Pixel)buffer.memory, pixel_count);
 
-    for y in 0..<bitmap_height {
-        for x in 0..<bitmap_width {
-            pixels[x + y * bitmap_width][0] = cast(u8)(x + blue_offset);
-            pixels[x + y * bitmap_width][1] = cast(u8)(y + green_offset);
+    for y in 0..<buffer.height {
+        for x in 0..<buffer.width {
+            pixels[x + y * buffer.width][0] = cast(u8)(x + blue_offset);
+            pixels[x + y * buffer.width][1] = cast(u8)(y + green_offset);
         }
     }
 }
 
 
-resize_dib_section :: proc "std" (width, height: i32) {
+resize_dib_section :: proc "std" (buffer: ^Win32_Offscreen_Buffer, width, height: i32) {
     using win32;
 
-    if bitmap_memory != nil {
-        virtual_free(bitmap_memory, 0, MEM_RELEASE);
+    if buffer.memory != nil {
+        virtual_free(buffer.memory, 0, MEM_RELEASE);
     }
 
-    bitmap_width = width;
-    bitmap_height = height;
+    buffer.width = width;
+    buffer.height = height;
 
-    bitmap_info.size = size_of(Bitmap_Info_Header);
-    bitmap_info.width = bitmap_width;
-    bitmap_info.height = -bitmap_height;
-    bitmap_info.planes = 1;
-    bitmap_info.bit_count = 32;
-    bitmap_info.compression = BI_RGB;
+    buffer.bitmap_info.size = size_of(Bitmap_Info_Header);
+    buffer.bitmap_info.width = buffer.width;
+    buffer.bitmap_info.height = -buffer.height;
+    buffer.bitmap_info.planes = 1;
+    buffer.bitmap_info.bit_count = 32;
+    buffer.bitmap_info.compression = BI_RGB;
     
-    pixel_count := int(bitmap_width * bitmap_height);
+    pixel_count := int(buffer.width * buffer.height);
     bitmap_memory_size := uint(4 * pixel_count);
 
-    bitmap_memory = virtual_alloc(nil, bitmap_memory_size, MEM_COMMIT, PAGE_READWRITE);
+    buffer.memory = virtual_alloc(nil, bitmap_memory_size, MEM_COMMIT, PAGE_READWRITE);
 }
 
 
-win32_update_window :: proc "std" (device_context: win32.Hdc, window_rect: win32.Rect) {
+win32_display_buffer_in_window :: proc "std" (device_context: win32.Hdc, window_width, window_height: i32) {
     using win32;
-    
-    window_width := window_rect.right - window_rect.left;
-    window_height := window_rect.bottom - window_rect.top;
     
     stretch_dibits(
         device_context,
-        0, 0, bitmap_width, bitmap_height,
         0, 0, window_width, window_height,
-        bitmap_memory, 
-        &bitmap_info,
+        0, 0, buffer.width, buffer.height,
+        buffer.memory,
+        &buffer.bitmap_info,
         DIB_RGB_COLORS,SRCCOPY
     );
 }
@@ -76,12 +97,6 @@ win32_window_callback :: proc "std" (window: win32.Hwnd, message: u32, wparam: w
 
     switch (message) {
         case WM_SIZE:
-            client_rect: Rect;
-            get_client_rect(window, &client_rect);
-            width := client_rect.right - client_rect.left;
-            height := client_rect.bottom - client_rect.top;
-
-            resize_dib_section(width, height);
         case WM_CLOSE:
             // TODO handle this with a message to the user
             running = false;
@@ -93,10 +108,8 @@ win32_window_callback :: proc "std" (window: win32.Hwnd, message: u32, wparam: w
             paint: Paint_Struct;
             device_context := begin_paint(window, &paint);
             
-            client_rect: Rect;
-            get_client_rect(window, &client_rect);
-            
-            win32_update_window(device_context, client_rect);
+            dimension := win32_get_window_dimension(window);
+            win32_display_buffer_in_window(device_context, dimension.width, dimension.height);
 
             end_paint(window, &paint);
         case:
@@ -127,7 +140,7 @@ main :: proc() {
         return;
     }
     
-    window_handle := create_window_ex_a(
+    window := create_window_ex_a(
         0,
         window_class.class_name,
         "Handmade Hero",
@@ -142,10 +155,16 @@ main :: proc() {
         nil
     );
 
-    if window_handle == nil {
+    if window == nil {
         // TODO Logging
         return;
     }
+
+    dimension := win32_get_window_dimension(window);
+    resize_dib_section(&buffer, dimension.width, dimension.height);
+
+    blue_offset := i32(0);
+    green_offset := i32(0);
 
     for running {
         message: Msg;
@@ -162,16 +181,17 @@ main :: proc() {
             dispatch_message_a(&message);
         }
 
-        render_weird_gradient(x_offset, y_offset);
+        render_weird_gradient(buffer, blue_offset, green_offset);
         
-        dc := get_dc(window_handle);
-        client_rect: Rect;
-        get_client_rect(window_handle, &client_rect);
+        dc := get_dc(window);
+        
+        dimension := win32_get_window_dimension(window);
+        win32_display_buffer_in_window(dc, dimension.width, dimension.height);
+        
+        release_dc(window, dc);
 
-        x_offset += 1;
-        y_offset += 1;
+        blue_offset += 1;
+        green_offset += 1;
 
-        win32_update_window(dc, client_rect);
-        release_dc(window_handle, dc);
     }
 }
