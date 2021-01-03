@@ -1,14 +1,109 @@
 package main
 
 import "core:fmt"
+import "core:mem"
 import win32 "core:sys/win32"
 
 // TODO @cleanup global
 running := true;
 bitmap_info: win32.Bitmap_Info;
 bitmap_memory: rawptr;
-bitmap_handle: win32.Hbitmap;
-device_context: win32.Hdc;
+bitmap_width: i32;
+bitmap_height: i32;
+need_to_resize: bool;
+x_offset: i32;
+y_offset: i32;
+
+render_weird_gradient :: proc(blue_offset, green_offset: i32) {
+    pixel_count := int(bitmap_width * bitmap_height);
+    
+    Pixel :: [4]u8;
+    pixels := mem.slice_ptr(cast(^Pixel)bitmap_memory, pixel_count);
+
+    for y in 0..<bitmap_height {
+        for x in 0..<bitmap_width {
+            pixels[x + y * bitmap_width][0] = cast(u8)(x + blue_offset);
+            pixels[x + y * bitmap_width][1] = cast(u8)(y + green_offset);
+        }
+    }
+}
+
+
+resize_dib_section :: proc "std" (width, height: i32) {
+    using win32;
+
+    if bitmap_memory != nil {
+        virtual_free(bitmap_memory, 0, MEM_RELEASE);
+    }
+
+    bitmap_width = width;
+    bitmap_height = height;
+
+    bitmap_info.size = size_of(Bitmap_Info_Header);
+    bitmap_info.width = bitmap_width;
+    bitmap_info.height = -bitmap_height;
+    bitmap_info.planes = 1;
+    bitmap_info.bit_count = 32;
+    bitmap_info.compression = BI_RGB;
+    
+    pixel_count := int(bitmap_width * bitmap_height);
+    bitmap_memory_size := uint(4 * pixel_count);
+
+    bitmap_memory = virtual_alloc(nil, bitmap_memory_size, MEM_COMMIT, PAGE_READWRITE);
+}
+
+
+win32_update_window :: proc "std" (device_context: win32.Hdc, window_rect: win32.Rect) {
+    using win32;
+    
+    window_width := window_rect.right - window_rect.left;
+    window_height := window_rect.bottom - window_rect.top;
+    
+    stretch_dibits(
+        device_context,
+        0, 0, bitmap_width, bitmap_height,
+        0, 0, window_width, window_height,
+        bitmap_memory, 
+        &bitmap_info,
+        DIB_RGB_COLORS,SRCCOPY
+    );
+}
+
+
+win32_window_callback :: proc "std" (window: win32.Hwnd, message: u32, wparam: win32.Wparam, lparam: win32.Lparam) -> win32.Lresult {
+    using win32;
+    result := Lresult {};
+
+    switch (message) {
+        case WM_SIZE:
+            client_rect: Rect;
+            get_client_rect(window, &client_rect);
+            width := client_rect.right - client_rect.left;
+            height := client_rect.bottom - client_rect.top;
+
+            resize_dib_section(width, height);
+        case WM_CLOSE:
+            // TODO handle this with a message to the user
+            running = false;
+        case WM_DESTROY:
+            // TODO handle this as an error - recreate window?
+            running = false;
+        case WM_ACTIVATEAPP:
+        case WM_PAINT:
+            paint: Paint_Struct;
+            device_context := begin_paint(window, &paint);
+            
+            client_rect: Rect;
+            get_client_rect(window, &client_rect);
+            
+            win32_update_window(device_context, client_rect);
+
+            end_paint(window, &paint);
+        case:
+            result = def_window_proc_a(window, message, wparam, lparam);
+    }
+    return result;
+}
 
 
 main :: proc() {
@@ -52,96 +147,31 @@ main :: proc() {
         return;
     }
 
-    message: Msg;
     for running {
-        message_result := get_message_a(&message, Hwnd(nil), 0, 0);
-        if i32(message_result) > 0 {
+        message: Msg;
+        for {
+            message_result := peek_message_a(&message, Hwnd(nil), 0, 0, PM_REMOVE);
+            if i32(message_result) <= 0 {
+                break;
+            }
+
+            if message.message == WM_QUIT {
+                running = false;
+            }
             translate_message(&message);
             dispatch_message_a(&message);
         }
-        else {
-            break;
-        }
+
+        render_weird_gradient(x_offset, y_offset);
+        
+        dc := get_dc(window_handle);
+        client_rect: Rect;
+        get_client_rect(window_handle, &client_rect);
+
+        x_offset += 1;
+        y_offset += 1;
+
+        win32_update_window(dc, client_rect);
+        release_dc(window_handle, dc);
     }
-}
-
-
-win32_window_callback :: proc "std" (window: win32.Hwnd, message: u32, wparam: win32.Wparam, lparam: win32.Lparam) -> win32.Lresult {
-    using win32;
-    result := Lresult {};
-
-    switch (message) {
-        case WM_SIZE:
-            client_rect: Rect ;
-            get_client_rect(window, &client_rect);
-            width := client_rect.right - client_rect.left;
-            height := client_rect.bottom - client_rect.top;
-            resize_dib_section(width, height);
-        case WM_DESTROY:
-            // TODO handle this as an error - recreate window?
-            running = false;
-        case WM_CLOSE:
-            // TODO handle this with a message to the user
-            running = false;
-        case WM_ACTIVATEAPP:
-        case WM_PAINT:
-            paint: Paint_Struct;
-            device_context := begin_paint(window, &paint);
-            x := paint.rc_paint.left;
-            y := paint.rc_paint.top;
-            width := paint.rc_paint.right - paint.rc_paint.left;
-            height := paint.rc_paint.bottom - paint.rc_paint.top;
-            win32_update_window(device_context, window, x, y, width, height);
-
-            end_paint(window, &paint);
-        case:
-            result = def_window_proc_a(window, message, wparam, lparam);
-    }
-    return result;
-}
-
-
-win32_update_window :: proc "std" (device_context: win32.Hdc, window: win32.Hwnd, x, y, w, h: i32) {
-    using win32;
-    stretch_dibits(device_context, 
-                   x, y, w, h, 
-                   x, y, w, h,
-                   bitmap_memory, &bitmap_info,
-                   DIB_RGB_COLORS,
-                   SRCCOPY
-    );
-}
-
-
-resize_dib_section :: proc "std" (width: i32, height: i32) {
-    using win32;
-
-    // TODO Bulletproof this
-    // Maybe don't free first, free after, then free first if that fails
-
-    if bitmap_handle != nil {
-        delete_object(Hgdiobj(bitmap_handle));
-    }
-    
-    if device_context == nil {
-        // TODO Should we recreate these under special circumstances
-        device_context = create_compatible_dc(Hdc(nil));
-    }
-
-    bitmap_info.size = size_of(Bitmap_Info_Header);
-    bitmap_info.width = width;
-    bitmap_info.height = height;
-    bitmap_info.planes = 1;
-    bitmap_info.bit_count = 32;
-    bitmap_info.compression = BI_RGB;
-    
-
-    bitmap_handle = create_dib_section(
-        device_context,
-        &bitmap_info,
-        DIB_RGB_COLORS,
-        bitmap_memory,
-        Handle(nil),
-        0
-    );
 }

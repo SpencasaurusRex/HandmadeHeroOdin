@@ -1,1 +1,2 @@
-devenv main.exe main.pdb main.odin 
+odin build main.odin --debug
+devenv main.exe main.odin main.pdb 
