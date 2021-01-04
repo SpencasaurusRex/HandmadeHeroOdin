@@ -116,41 +116,23 @@ win32_window_callback :: proc "std" (window: win32.Hwnd, message: u32, wparam: w
                 break;
             }
 
-            if vk_code == 'W' {
-                
+            switch vk_code {
+                case 'W':
+                case 'A':
+                case 'S':
+                case 'D':
+                case 'Q':
+                case 'E':
             }
-            else if vk_code == 'A' {
 
-            }
-            else if vk_code == 'S' {
-                
-            }
-            else if vk_code == 'D' {
-                
-            }
-            else if vk_code == 'Q' {
-                
-            }
-            else if vk_code == 'E' {
-                
-            }
-            else if int(vk_code) == VK_LEFT {
-
-            }
-            else if int(vk_code) == VK_UP {
-
-            }
-            else if int(vk_code) == VK_RIGHT {
-
-            }
-            else if int(vk_code) == VK_DOWN {
-
-            }
-            else if int(vk_code) == VK_ESCAPE {
-                running = false;
-            }
-            else if int(vk_code) == VK_SPACE {
-                
+            switch int(vk_code) {
+                case VK_LEFT:
+                case VK_UP:
+                case VK_RIGHT:
+                case VK_DOWN:
+                case VK_ESCAPE:
+                    running = false;
+                case VK_SPACE:
             }
 
         case WM_SIZE:
@@ -168,9 +150,6 @@ win32_window_callback :: proc "std" (window: win32.Hwnd, message: u32, wparam: w
     }
     return result;
 }
-
-blue_offset := i32(0);
-green_offset := i32(0);
 
 
 main :: proc() {
@@ -219,8 +198,8 @@ main :: proc() {
     dimension := win32_get_window_dimension(window);
     resize_dib_section(&buffer, dimension.width, dimension.height);
 
-    // blue_offset := i32(0);
-    // green_offset := i32(0);
+    blue_offset := i32(0);
+    green_offset := i32(0);
 
     for running {
         message: Msg;
